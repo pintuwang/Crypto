@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crypto Price App with ±5% Zones</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    body { font-family: Arial, sans-serif; text-align: center; margin-top: 20px; }
+    .price { font-size: 1.5em; margin: 10px; }
+    .chart-container {
+        width: 300px;
+        height: 150px;
+        display: inline-block;
+        border: 1px solid #ddd;
+        padding: 10px;
+        margin: 10px;
+        border-radius: 10px;
+        background: #f9f9f9;
+    }
+    .currency-toggle { margin-top: 20px; }
+    .loading { font-size: 0.9em; color: #777; }
+</style>
+</head>
+<body>
+
+<h1>Real-Time BTC and XRP Prices with ±5% Zones</h1>
+
+<div id="btc-info">
+    <div id="btc-price" class="price">BTC Price: Loading...</div>
+    <div class="chart-container"><canvas id="btc-chart"></canvas></div>
+</div>
+
+<div id="xrp-info">
+    <div id="xrp-price" class="price">XRP Price: Loading...</div>
+    <div class="chart-container"><canvas id="xrp-chart"></canvas></div>
+</div>
+
+<div class="currency-toggle">
+    <button id="toggle-btn" onclick="toggleCurrency()">Switch to SGD</button>
+    <div id="loading-indicator" class="loading" style="display: none;">Updating...</div>
+</div>
+
+<script>
+    let currency = 'usd';
+    let btcChart, xrpChart;
+    let priceInterval, chartInterval;
+    const toggleBtn = document.getElementById('toggle-btn');
+    const loadingIndicator = document.getElementById('loading-indicator');
+
+    async function fetchPrices() {
+        try {
+            toggleBtn.disabled = true;
+            loadingIndicator.style.display = 'block';
+
+            const url = `https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ripple&vs_currencies=usd,sgd`;
+            const response = await fetch(url);
+            const data = await response.json();
+
+            const btcPrice = data.bitcoin[currency];
+            const xrpPrice = data.ripple[currency];
+
+            document.getElementById('btc-price').textContent = `BTC Price: ${btcPrice} ${currency.toUpperCase()}`;
+            document.getElementById('xrp-price').textContent = `XRP Price: ${xrpPrice} ${currency.toUpperCase()}`;
+
+            updateLatestPrice(btcChart, btcPrice);
+            updateLatestPrice(xrpChart, xrpPrice);
+        } catch (error) {
+            console.error("Error fetching prices:", error);
+        } finally {
+            toggleBtn.disabled = false;
+            loadingIndicator.style.display = 'none';
+        }
+    }
+
+    async function fetchChartData() {
+        try {
+            toggleBtn.disabled = true;
+            loadingIndicator.style.display = 'block';
+
+            const btcUrl = `https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=${currency}&days=1`;
+            const xrpUrl = `https://api.coingecko.com/api/v3/coins/ripple/market_chart?vs_currency=${currency}&days=1`;
+
+            const [btcResponse, xrpResponse] = await Promise.all([fetch(btcUrl), fetch(xrpUrl)]);
+            const btcData = await btcResponse.json();
+            const xrpData = await xrpResponse.json();
+
+            const btcPrices = btcData.prices.map(item => item[1]);
+            const xrpPrices = xrpData.prices.map(item => item[1]);
+
+            const btcReferencePrice = btcPrices[0];
+            const xrpReferencePrice = xrpPrices[0];
+
+            updateChart(btcChart, btcPrices, btcReferencePrice);
+            updateChart(xrpChart, xrpPrices, xrpReferencePrice);
+        } catch (error) {
+            console.error("Error fetching chart data:", error);
+        } finally {
+            toggleBtn.disabled = false;
+            loadingIndicator.style.display = 'none';
+        }
+    }
+
+    function createChart(ctx) {
+        return new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: Array(24).fill(''),
+                datasets: [
+                    {
+                        label: 'Price',
+                        data: [],
+                        borderColor: '#007bff',
+                        borderWidth: 2,
+                        tension: 0.2,
+                        pointRadius: 0,
+                    },
+                    {
+                        label: '+5%',
+                        data: [],
+                        borderColor: 'rgba(0, 200, 0, 0.2)',
+                        borderWidth: 1,
+                        fill: { above: 'rgba(0, 200, 0, 0.1)', below: 'transparent' },
+                    },
+                    {
+                        label: '-5%',
+                        data: [],
+                        borderColor: 'rgba(200, 0, 0, 0.2)',
+                        borderWidth: 1,
+                        fill: { above: 'transparent', below: 'rgba(200, 0, 0, 0.1)' },
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { display: false },
+                    y: { display: true }
+                }
+            }
+        });
+    }
+
+    function updateChart(chart, data, referencePrice) {
+        const plus5 = referencePrice * 1.05;
+        const minus5 = referencePrice * 0.95;
+
+        chart.data.labels = Array(data.length).fill('');
+        chart.data.datasets[0].data = data;
+        chart.data.datasets[1].data = Array(data.length).fill(plus5);
+        chart.data.datasets[2].data = Array(data.length).fill(minus5);
+
+        chart.update();
+    }
+
+    function updateLatestPrice(chart, latestPrice) {
+        const dataLength = chart.data.datasets[0].data.length;
+        if (dataLength > 0) {
+            chart.data.datasets[0].data[dataLength - 1] = latestPrice;
+            chart.update();
+        }
+    }
+
+    function resetIntervals() {
+        clearInterval(priceInterval);
+        clearInterval(chartInterval);
+
+        // Restart intervals
+        priceInterval = setInterval(fetchPrices, 10000);
+        chartInterval = setInterval(fetchChartData, 60000);
+
+        // Fetch data immediately
+        fetchPrices();
+        fetchChartData();
+    }
+
+    function handleVisibilityChange() {
+        if (!document.hidden) {
+            resetIntervals();
+        }
+    }
+
+    function handleFocus() {
+        resetIntervals();
+    }
+
+    async function toggleCurrency() {
+        currency = currency === 'usd' ? 'sgd' : 'usd';
+        await fetchPrices();
+        await fetchChartData();
+        toggleBtn.textContent = `Switch to ${currency === 'usd' ? 'SGD' : 'USD'}`;
+    }
+
+    window.onload = () => {
+        const btcCtx = document.getElementById('btc-chart').getContext('2d');
+        const xrpCtx = document.getElementById('xrp-chart').getContext('2d');
+        btcChart = createChart(btcCtx);
+        xrpChart = createChart(xrpCtx);
+
+        resetIntervals();
+
+        // Listen for visibility and focus changes
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        window.addEventListener('focus', handleFocus);
+    };
+</script>
+
+</body>
+</html>
