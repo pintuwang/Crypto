@@ -20,6 +20,8 @@
     }
     .currency-toggle { margin-top: 20px; }
     .loading { font-size: 0.9em; color: #777; }
+    .error { color: red; font-size: 0.9em; margin: 5px; }
+    .status { font-size: 0.8em; color: #666; margin-top: 5px; }
 </style>
 </head>
 <body>
@@ -28,11 +30,13 @@
 
 <div id="btc-info">
     <div id="btc-price" class="price">BTC Price: Loading...</div>
+    <div id="btc-error" class="error"></div>
     <div class="chart-container"><canvas id="btc-chart"></canvas></div>
 </div>
 
 <div id="xrp-info">
     <div id="xrp-price" class="price">XRP Price: Loading...</div>
+    <div id="xrp-error" class="error"></div>
     <div class="chart-container"><canvas id="xrp-chart"></canvas></div>
 </div>
 
@@ -41,32 +45,77 @@
     <div id="loading-indicator" class="loading" style="display: none;">Updating...</div>
 </div>
 
+<div id="status" class="status">Last updated: Never</div>
+
 <script>
     let currency = 'usd';
     let btcChart, xrpChart;
     let priceInterval, chartInterval;
     const toggleBtn = document.getElementById('toggle-btn');
     const loadingIndicator = document.getElementById('loading-indicator');
+    const statusDiv = document.getElementById('status');
+    let retryCount = 0;
+    const MAX_RETRIES = 3;
+
+    async function fetchWithTimeout(url, timeout = 5000) {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeout);
+            
+            const response = await fetch(url, { signal: controller.signal });
+            clearTimeout(timeoutId);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            return await response.json();
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                throw new Error('Request timed out');
+            }
+            throw error;
+        }
+    }
 
     async function fetchPrices() {
         try {
             toggleBtn.disabled = true;
             loadingIndicator.style.display = 'block';
+            document.getElementById('btc-error').textContent = '';
+            document.getElementById('xrp-error').textContent = '';
 
             const url = `https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ripple&vs_currencies=usd,sgd`;
-            const response = await fetch(url);
-            const data = await response.json();
+            const data = await fetchWithTimeout(url);
+
+            if (!data.bitcoin || !data.ripple) {
+                throw new Error('Invalid API response format');
+            }
 
             const btcPrice = data.bitcoin[currency];
             const xrpPrice = data.ripple[currency];
 
-            document.getElementById('btc-price').textContent = `BTC Price: ${btcPrice} ${currency.toUpperCase()}`;
-            document.getElementById('xrp-price').textContent = `XRP Price: ${xrpPrice} ${currency.toUpperCase()}`;
+            document.getElementById('btc-price').textContent = `BTC Price: ${btcPrice.toLocaleString()} ${currency.toUpperCase()}`;
+            document.getElementById('xrp-price').textContent = `XRP Price: ${xrpPrice.toLocaleString()} ${currency.toUpperCase()}`;
 
             updateLatestPrice(btcChart, btcPrice);
             updateLatestPrice(xrpChart, xrpPrice);
+            
+            statusDiv.textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
+            retryCount = 0; // Reset retry count on successful fetch
         } catch (error) {
             console.error("Error fetching prices:", error);
+            const errorMessage = error.message === 'Request timed out' 
+                ? 'API request timed out. Retrying...' 
+                : 'Error fetching prices. Retrying...';
+            
+            document.getElementById('btc-error').textContent = errorMessage;
+            document.getElementById('xrp-error').textContent = errorMessage;
+            
+            retryCount++;
+            if (retryCount <= MAX_RETRIES) {
+                setTimeout(fetchPrices, 2000 * retryCount); // Exponential backoff
+            }
         } finally {
             toggleBtn.disabled = false;
             loadingIndicator.style.display = 'none';
@@ -81,12 +130,17 @@
             const btcUrl = `https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=${currency}&days=1`;
             const xrpUrl = `https://api.coingecko.com/api/v3/coins/ripple/market_chart?vs_currency=${currency}&days=1`;
 
-            const [btcResponse, xrpResponse] = await Promise.all([fetch(btcUrl), fetch(xrpUrl)]);
-            const btcData = await btcResponse.json();
-            const xrpData = await xrpResponse.json();
+            const [btcResponse, xrpResponse] = await Promise.all([
+                fetchWithTimeout(btcUrl),
+                fetchWithTimeout(xrpUrl)
+            ]);
 
-            const btcPrices = btcData.prices.map(item => item[1]);
-            const xrpPrices = xrpData.prices.map(item => item[1]);
+            if (!btcResponse.prices || !xrpResponse.prices) {
+                throw new Error('Invalid chart data format');
+            }
+
+            const btcPrices = btcResponse.prices.map(item => item[1]);
+            const xrpPrices = xrpResponse.prices.map(item => item[1]);
 
             const btcReferencePrice = btcPrices[0];
             const xrpReferencePrice = xrpPrices[0];
@@ -95,6 +149,8 @@
             updateChart(xrpChart, xrpPrices, xrpReferencePrice);
         } catch (error) {
             console.error("Error fetching chart data:", error);
+            document.getElementById('btc-error').textContent = 'Error loading chart data';
+            document.getElementById('xrp-error').textContent = 'Error loading chart data';
         } finally {
             toggleBtn.disabled = false;
             loadingIndicator.style.display = 'none';
@@ -136,7 +192,14 @@
                 plugins: { legend: { display: false } },
                 scales: {
                     x: { display: false },
-                    y: { display: true }
+                    y: { 
+                        display: true,
+                        ticks: {
+                            callback: function(value) {
+                                return value.toLocaleString();
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -166,9 +229,9 @@
         clearInterval(priceInterval);
         clearInterval(chartInterval);
 
-        // Restart intervals
-        priceInterval = setInterval(fetchPrices, 10000);
-        chartInterval = setInterval(fetchChartData, 60000);
+        // Restart intervals with more reasonable timing
+        priceInterval = setInterval(fetchPrices, 30000); // 30 seconds
+        chartInterval = setInterval(fetchChartData, 300000); // 5 minutes
 
         // Fetch data immediately
         fetchPrices();
