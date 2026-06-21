@@ -48,73 +48,115 @@
 <div id="status" class="status">Last updated: Never</div>
 
 <script>
+    // ── Config ────────────────────────────────────────────────────────────────
+    // API keys are NEVER stored here.
+    // fetch_prices.py (run by GitHub Actions using the COINGECKO_API_KEY secret)
+    // writes data/prices.json; this page reads from that file.
+    // If the cached file is unavailable it falls back to the free public endpoint.
+    const CACHE_URL    = './data/prices.json';
+    const PUBLIC_BASE  = 'https://api.coingecko.com/api/v3';
+    const POLL_MS      = 30000;   // 30 s — re-reads the cached file
+    const CHART_MS     = 300000;  // 5 min — refreshes chart data
+
+    // ── State ─────────────────────────────────────────────────────────────────
     let currency = 'usd';
     let btcChart, xrpChart;
     let priceInterval, chartInterval;
-    const toggleBtn = document.getElementById('toggle-btn');
-    const loadingIndicator = document.getElementById('loading-indicator');
-    const statusDiv = document.getElementById('status');
     let retryCount = 0;
     const MAX_RETRIES = 3;
 
-    async function fetchWithTimeout(url, timeout = 5000) {
+    const toggleBtn        = document.getElementById('toggle-btn');
+    const loadingIndicator = document.getElementById('loading-indicator');
+    const statusDiv        = document.getElementById('status');
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    async function fetchWithTimeout(url, timeout = 8000) {
+        const controller = new AbortController();
+        const tid = setTimeout(() => controller.abort(), timeout);
         try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), timeout);
-            
-            const response = await fetch(url, { signal: controller.signal });
-            clearTimeout(timeoutId);
-            
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            
-            return await response.json();
-        } catch (error) {
-            if (error.name === 'AbortError') {
-                throw new Error('Request timed out');
-            }
-            throw error;
+            const resp = await fetch(url, { signal: controller.signal });
+            clearTimeout(tid);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            return await resp.json();
+        } catch (err) {
+            clearTimeout(tid);
+            throw err.name === 'AbortError' ? new Error('Request timed out') : err;
         }
     }
 
+    function setError(msg) {
+        document.getElementById('btc-error').textContent = msg;
+        document.getElementById('xrp-error').textContent = msg;
+    }
+
+    function clearErrors() {
+        document.getElementById('btc-error').textContent = '';
+        document.getElementById('xrp-error').textContent = '';
+    }
+
+    // ── Primary path: read from data/prices.json (populated by GitHub Actions) ─
+    async function fetchFromCache() {
+        const cb   = '?v=' + Date.now();   // cache-bust so GitHub Pages serves fresh file
+        const data = await fetchWithTimeout(CACHE_URL + cb);
+
+        const btcPrice = data.prices?.bitcoin?.[currency];
+        const xrpPrice = data.prices?.ripple?.[currency];
+        if (btcPrice == null || xrpPrice == null) throw new Error('Incomplete cache data');
+
+        document.getElementById('btc-price').textContent =
+            `BTC Price: ${btcPrice.toLocaleString()} ${currency.toUpperCase()}`;
+        document.getElementById('xrp-price').textContent =
+            `XRP Price: ${xrpPrice.toLocaleString()} ${currency.toUpperCase()}`;
+
+        updateLatestPrice(btcChart, btcPrice);
+        updateLatestPrice(xrpChart, xrpPrice);
+
+        statusDiv.textContent = `Last updated: ${new Date().toLocaleTimeString()} (cached ${data.last_update ?? ''})`;
+        return data;
+    }
+
+    // ── Fallback path: call CoinGecko free public endpoint directly ───────────
+    async function fetchFromPublicAPI() {
+        const url  = `${PUBLIC_BASE}/simple/price?ids=bitcoin,ripple&vs_currencies=usd,sgd`;
+        const data = await fetchWithTimeout(url);
+
+        if (!data.bitcoin || !data.ripple) throw new Error('Invalid API response');
+
+        const btcPrice = data.bitcoin[currency];
+        const xrpPrice = data.ripple[currency];
+
+        document.getElementById('btc-price').textContent =
+            `BTC Price: ${btcPrice.toLocaleString()} ${currency.toUpperCase()}`;
+        document.getElementById('xrp-price').textContent =
+            `XRP Price: ${xrpPrice.toLocaleString()} ${currency.toUpperCase()}`;
+
+        updateLatestPrice(btcChart, btcPrice);
+        updateLatestPrice(xrpChart, xrpPrice);
+
+        statusDiv.textContent = `Last updated: ${new Date().toLocaleTimeString()} (live)`;
+    }
+
+    // ── Price refresh (cache-first, public API fallback) ──────────────────────
     async function fetchPrices() {
+        toggleBtn.disabled = true;
+        loadingIndicator.style.display = 'block';
+        clearErrors();
         try {
-            toggleBtn.disabled = true;
-            loadingIndicator.style.display = 'block';
-            document.getElementById('btc-error').textContent = '';
-            document.getElementById('xrp-error').textContent = '';
-
-            const url = `https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ripple&vs_currencies=usd,sgd`;
-            const data = await fetchWithTimeout(url);
-
-            if (!data.bitcoin || !data.ripple) {
-                throw new Error('Invalid API response format');
-            }
-
-            const btcPrice = data.bitcoin[currency];
-            const xrpPrice = data.ripple[currency];
-
-            document.getElementById('btc-price').textContent = `BTC Price: ${btcPrice.toLocaleString()} ${currency.toUpperCase()}`;
-            document.getElementById('xrp-price').textContent = `XRP Price: ${xrpPrice.toLocaleString()} ${currency.toUpperCase()}`;
-
-            updateLatestPrice(btcChart, btcPrice);
-            updateLatestPrice(xrpChart, xrpPrice);
-            
-            statusDiv.textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
-            retryCount = 0; // Reset retry count on successful fetch
-        } catch (error) {
-            console.error("Error fetching prices:", error);
-            const errorMessage = error.message === 'Request timed out' 
-                ? 'API request timed out. Retrying...' 
-                : 'Error fetching prices. Retrying...';
-            
-            document.getElementById('btc-error').textContent = errorMessage;
-            document.getElementById('xrp-error').textContent = errorMessage;
-            
-            retryCount++;
-            if (retryCount <= MAX_RETRIES) {
-                setTimeout(fetchPrices, 2000 * retryCount); // Exponential backoff
+            await fetchFromCache();
+            retryCount = 0;
+        } catch {
+            try {
+                await fetchFromPublicAPI();
+                retryCount = 0;
+            } catch (err) {
+                const msg = err.message === 'Request timed out'
+                    ? 'API request timed out. Retrying...'
+                    : 'Error fetching prices. Retrying...';
+                setError(msg);
+                retryCount++;
+                if (retryCount <= MAX_RETRIES) {
+                    setTimeout(fetchPrices, 2000 * retryCount);
+                }
             }
         } finally {
             toggleBtn.disabled = false;
@@ -122,69 +164,59 @@
         }
     }
 
+    // ── Chart data (cache-first, public API fallback) ─────────────────────────
     async function fetchChartData() {
+        toggleBtn.disabled = true;
+        loadingIndicator.style.display = 'block';
         try {
-            toggleBtn.disabled = true;
-            loadingIndicator.style.display = 'block';
+            // Try cached chart data first
+            const cb   = '?v=' + Date.now();
+            const data = await fetchWithTimeout(CACHE_URL + cb);
+            const btcPrices = (data.charts?.bitcoin ?? []).map(p => p[1]);
+            const xrpPrices = (data.charts?.ripple  ?? []).map(p => p[1]);
 
-            const btcUrl = `https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=${currency}&days=1`;
-            const xrpUrl = `https://api.coingecko.com/api/v3/coins/ripple/market_chart?vs_currency=${currency}&days=1`;
-
-            const [btcResponse, xrpResponse] = await Promise.all([
-                fetchWithTimeout(btcUrl),
-                fetchWithTimeout(xrpUrl)
-            ]);
-
-            if (!btcResponse.prices || !xrpResponse.prices) {
-                throw new Error('Invalid chart data format');
+            if (btcPrices.length && xrpPrices.length) {
+                updateChart(btcChart, btcPrices, btcPrices[0]);
+                updateChart(xrpChart, xrpPrices, xrpPrices[0]);
+                return;
             }
+            throw new Error('No chart data in cache');
+        } catch {
+            // Fall back to public API for chart data
+            try {
+                const btcUrl = `${PUBLIC_BASE}/coins/bitcoin/market_chart?vs_currency=${currency}&days=1`;
+                const xrpUrl = `${PUBLIC_BASE}/coins/ripple/market_chart?vs_currency=${currency}&days=1`;
+                const [btcResp, xrpResp] = await Promise.all([
+                    fetchWithTimeout(btcUrl),
+                    fetchWithTimeout(xrpUrl)
+                ]);
 
-            const btcPrices = btcResponse.prices.map(item => item[1]);
-            const xrpPrices = xrpResponse.prices.map(item => item[1]);
+                if (!btcResp.prices || !xrpResp.prices) throw new Error('Invalid chart data');
 
-            const btcReferencePrice = btcPrices[0];
-            const xrpReferencePrice = xrpPrices[0];
-
-            updateChart(btcChart, btcPrices, btcReferencePrice);
-            updateChart(xrpChart, xrpPrices, xrpReferencePrice);
-        } catch (error) {
-            console.error("Error fetching chart data:", error);
-            document.getElementById('btc-error').textContent = 'Error loading chart data';
-            document.getElementById('xrp-error').textContent = 'Error loading chart data';
+                const btcPrices = btcResp.prices.map(p => p[1]);
+                const xrpPrices = xrpResp.prices.map(p => p[1]);
+                updateChart(btcChart, btcPrices, btcPrices[0]);
+                updateChart(xrpChart, xrpPrices, xrpPrices[0]);
+            } catch (err) {
+                setError('Error loading chart data');
+                console.error(err);
+            }
         } finally {
             toggleBtn.disabled = false;
             loadingIndicator.style.display = 'none';
         }
     }
 
+    // ── Chart helpers ─────────────────────────────────────────────────────────
     function createChart(ctx) {
         return new Chart(ctx, {
             type: 'line',
             data: {
                 labels: Array(24).fill(''),
                 datasets: [
-                    {
-                        label: 'Price',
-                        data: [],
-                        borderColor: '#007bff',
-                        borderWidth: 2,
-                        tension: 0.2,
-                        pointRadius: 0,
-                    },
-                    {
-                        label: '+5%',
-                        data: [],
-                        borderColor: 'rgba(0, 200, 0, 0.2)',
-                        borderWidth: 1,
-                        fill: { above: 'rgba(0, 200, 0, 0.1)', below: 'transparent' },
-                    },
-                    {
-                        label: '-5%',
-                        data: [],
-                        borderColor: 'rgba(200, 0, 0, 0.2)',
-                        borderWidth: 1,
-                        fill: { above: 'transparent', below: 'rgba(200, 0, 0, 0.1)' },
-                    }
+                    { label: 'Price', data: [], borderColor: '#007bff', borderWidth: 2, tension: 0.2, pointRadius: 0 },
+                    { label: '+5%',  data: [], borderColor: 'rgba(0,200,0,0.2)',   borderWidth: 1, fill: { above: 'rgba(0,200,0,0.1)',   below: 'transparent' } },
+                    { label: '-5%',  data: [], borderColor: 'rgba(200,0,0,0.2)',   borderWidth: 1, fill: { above: 'transparent',           below: 'rgba(200,0,0,0.1)' } }
                 ]
             },
             options: {
@@ -192,80 +224,54 @@
                 plugins: { legend: { display: false } },
                 scales: {
                     x: { display: false },
-                    y: { 
-                        display: true,
-                        ticks: {
-                            callback: function(value) {
-                                return value.toLocaleString();
-                            }
-                        }
-                    }
+                    y: { display: true, ticks: { callback: v => v.toLocaleString() } }
                 }
             }
         });
     }
 
     function updateChart(chart, data, referencePrice) {
-        const plus5 = referencePrice * 1.05;
+        const plus5  = referencePrice * 1.05;
         const minus5 = referencePrice * 0.95;
-
-        chart.data.labels = Array(data.length).fill('');
+        chart.data.labels        = Array(data.length).fill('');
         chart.data.datasets[0].data = data;
         chart.data.datasets[1].data = Array(data.length).fill(plus5);
         chart.data.datasets[2].data = Array(data.length).fill(minus5);
-
         chart.update();
     }
 
     function updateLatestPrice(chart, latestPrice) {
-        const dataLength = chart.data.datasets[0].data.length;
-        if (dataLength > 0) {
-            chart.data.datasets[0].data[dataLength - 1] = latestPrice;
+        const len = chart.data.datasets[0].data.length;
+        if (len > 0) {
+            chart.data.datasets[0].data[len - 1] = latestPrice;
             chart.update();
         }
     }
 
+    // ── Interval management ───────────────────────────────────────────────────
     function resetIntervals() {
         clearInterval(priceInterval);
         clearInterval(chartInterval);
-
-        // Restart intervals with more reasonable timing
-        priceInterval = setInterval(fetchPrices, 30000); // 30 seconds
-        chartInterval = setInterval(fetchChartData, 300000); // 5 minutes
-
-        // Fetch data immediately
         fetchPrices();
         fetchChartData();
-    }
-
-    function handleVisibilityChange() {
-        if (!document.hidden) {
-            resetIntervals();
-        }
-    }
-
-    function handleFocus() {
-        resetIntervals();
+        priceInterval = setInterval(fetchPrices,    POLL_MS);
+        chartInterval = setInterval(fetchChartData, CHART_MS);
     }
 
     async function toggleCurrency() {
         currency = currency === 'usd' ? 'sgd' : 'usd';
+        toggleBtn.textContent = `Switch to ${currency === 'usd' ? 'SGD' : 'USD'}`;
         await fetchPrices();
         await fetchChartData();
-        toggleBtn.textContent = `Switch to ${currency === 'usd' ? 'SGD' : 'USD'}`;
     }
 
+    // ── Boot ──────────────────────────────────────────────────────────────────
     window.onload = () => {
-        const btcCtx = document.getElementById('btc-chart').getContext('2d');
-        const xrpCtx = document.getElementById('xrp-chart').getContext('2d');
-        btcChart = createChart(btcCtx);
-        xrpChart = createChart(xrpCtx);
-
+        btcChart = createChart(document.getElementById('btc-chart').getContext('2d'));
+        xrpChart = createChart(document.getElementById('xrp-chart').getContext('2d'));
         resetIntervals();
-
-        // Listen for visibility and focus changes
-        document.addEventListener('visibilitychange', handleVisibilityChange);
-        window.addEventListener('focus', handleFocus);
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) resetIntervals(); });
+        window.addEventListener('focus', resetIntervals);
     };
 </script>
 
