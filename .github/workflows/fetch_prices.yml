@@ -2,7 +2,7 @@ name: Fetch Crypto Prices
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # every 5 minutes
+    - cron: '*/30 * * * *'   # every 30 minutes
   workflow_dispatch:
 
 permissions:
@@ -12,9 +12,9 @@ jobs:
   fetch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
