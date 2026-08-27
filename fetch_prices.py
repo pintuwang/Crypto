@@ -5,9 +5,26 @@ from datetime import datetime, timezone, timedelta
 
 SGT = timezone(timedelta(hours=8))
 
-API_KEY  = os.environ.get('COINGECKO_API_KEY', '').strip()
-BASE_URL = 'https://pro-api.coingecko.com/api/v3' if API_KEY else 'https://api.coingecko.com/api/v3'
-HEADERS  = {'x-cg-pro-api-key': API_KEY} if API_KEY else {}
+# ---------------------------------------------------------------------------
+# CoinGecko API key routing
+#   Demo keys (free) start with "CG-" → api.coingecko.com + x-cg-demo-api-key
+#   Paid keys (Analyst/Lite/Pro/Pro+) → pro-api.coingecko.com + x-cg-pro-api-key
+#   No key at all                     → api.coingecko.com, no header (keyless)
+# ---------------------------------------------------------------------------
+API_KEY = os.environ.get('COINGECKO_API_KEY', '').strip()
+
+if API_KEY and not API_KEY.startswith('CG-'):
+    BASE_URL = 'https://pro-api.coingecko.com/api/v3'
+    HEADERS  = {'x-cg-pro-api-key': API_KEY}
+    TIER     = 'Pro (paid)'
+elif API_KEY:
+    BASE_URL = 'https://api.coingecko.com/api/v3'
+    HEADERS  = {'x-cg-demo-api-key': API_KEY}
+    TIER     = 'Demo (free)'
+else:
+    BASE_URL = 'https://api.coingecko.com/api/v3'
+    HEADERS  = {}
+    TIER     = 'Keyless (public)'
 
 def get(path, **params):
     url = f"{BASE_URL}{path}"
@@ -16,8 +33,7 @@ def get(path, **params):
     return r.json()
 
 def run():
-    tier = "Pro" if API_KEY else "Free (public)"
-    print(f"CoinGecko tier: {tier}")
+    print(f"CoinGecko tier: {TIER}")
 
     prices    = get('/simple/price', ids='bitcoin,ripple', vs_currencies='usd,sgd')
     btc_chart = get('/coins/bitcoin/market_chart', vs_currency='usd', days=1)
